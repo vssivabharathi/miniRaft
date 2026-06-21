@@ -1,0 +1,40 @@
+# Go build artifacts
+
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+
+# Test binaries
+
+*.test
+
+# Coverage output
+
+*.out
+coverage.*
+
+# Go workspace
+
+go.work
+go.work.sum
+
+# IDE files
+
+.vscode/
+.idea/
+
+# OS files
+
+.DS_Store
+Thumbs.db
+
+# Logs
+
+*.log
+
+# Binaries
+
+bin/
+dist/
