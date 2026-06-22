@@ -301,6 +301,9 @@ type Node struct {
 
 	// metrics tracks operational visibility statistics (lock-free)
 	metrics *Metrics
+
+	wg sync.WaitGroup
+	snapshotInProgress bool
 }
 
 // ---------------------------------------------------------------------------
@@ -354,8 +357,8 @@ func NewNode(id int, peers map[int]string) *Node {
 		stateMachine: NewKVStore(),
 		metrics:      &Metrics{},
 	}
-
 	n.restore()
+	n.restoreSnapshot()
 
 	n.logf("initialized as %s (term=%d)", n.state, n.currentTerm)
 	return n
@@ -372,7 +375,10 @@ func NewNode(id int, peers map[int]string) *Node {
 // OS process. The node's in-memory state is preserved so tests can inspect it
 // after a "crash".
 func (n *Node) Kill() {
+	n.mu.Lock()
 	atomic.StoreInt32(&n.dead, 1)
+	n.mu.Unlock()
+	n.wg.Wait()
 	n.logf("KILLED — simulating node crash")
 }
 
@@ -394,6 +400,8 @@ func (n *Node) Revive() {
 	n.mu.Lock()
 
 	n.state = Follower
+	n.commitIndex = 0
+	n.lastApplied = 0
 	// Clear stale RPC clients — they point to closed connections.
 	for id := range n.rpcClients {
 		if n.rpcClients[id] != nil {
@@ -423,8 +431,8 @@ func (n *Node) Revive() {
 	n.logfLocked("REVIVED — rejoining cluster as FOLLOWER (term=%d)", n.currentTerm)
 	n.mu.Unlock()
 
-	n.restoreSnapshot()
 	n.restore()
+	n.restoreSnapshot()
 }
 
 // ---------------------------------------------------------------------------
@@ -606,11 +614,19 @@ func (n *Node) applyCommitted() {
 	var toApply []LogEntry
 	offset := n.log[0].Index
 	for i := n.lastApplied + 1; i <= n.commitIndex; i++ {
+		if i <= offset {
+			// This entry was already compacted from the log, meaning it was
+			// included in a snapshot. If lastApplied is still behind offset,
+			// it means we crashed between persisting the new log offset and
+			// successfully persisting the snapshot. We can't apply it now,
+			// but we must not panic by accessing negative indices.
+			continue
+		}
 		toApply = append(toApply, n.log[i-offset])
 	}
 	
 	// Prevent other goroutines from applying the same entries
-	if len(toApply) > 0 {
+	if n.lastApplied < n.commitIndex {
 		n.lastApplied = n.commitIndex
 	}
 	n.mu.Unlock()

@@ -856,15 +856,16 @@ func (n *Node) sendInstallSnapshot(peerID int, args *InstallSnapshotArgs) {
 	}
 
 	n.mu.Lock()
-	defer n.mu.Unlock()
 
 	if n.state != Leader || n.currentTerm != args.Term {
+		n.mu.Unlock()
 		return
 	}
 
 	if reply.Term > n.currentTerm {
 		n.checkTerm(reply.Term)
 		n.state = Follower
+		n.mu.Unlock()
 		n.persist()
 		n.resetElectionTimer()
 		return
@@ -875,4 +876,5 @@ func (n *Node) sendInstallSnapshot(peerID int, args *InstallSnapshotArgs) {
 		n.matchIndex[peerID] = args.LastIncludedIndex
 		n.nextIndex[peerID] = args.LastIncludedIndex + 1
 	}
+	n.mu.Unlock()
 }
