@@ -44,6 +44,8 @@
 package main
 
 import (
+	"fmt"
+	"os"
 	"time"
 )
 
@@ -245,13 +247,35 @@ func (n *Node) sendHeartbeatToOne(peerID int, term int) {
 	// when the follower is behind (nextIndex[peerID] <= lastLogIndex).
 	// This unifies the heartbeat and replication paths: every 50ms tick
 	// attempts to bring the follower up to date, not just keep it alive.
+	offset := n.log[0].Index
+	if n.nextIndex[peerID] <= offset {
+		// Needs snapshot
+		args := &InstallSnapshotArgs{
+			Term:              n.currentTerm,
+			LeaderID:          n.id,
+			LastIncludedIndex: offset,
+			LastIncludedTerm:  n.log[0].Term,
+		}
+		n.mu.RUnlock()
+		
+		snapData, err := os.ReadFile(fmt.Sprintf("data/node-%d.snapshot", n.id))
+		if err != nil {
+			n.logf("failed to read snapshot file for peer %d: %v", peerID, err)
+			return
+		}
+		args.Data = snapData
+		
+		go n.sendInstallSnapshot(peerID, args)
+		return
+	}
+
 	prevLogIndex := n.nextIndex[peerID] - 1
 	prevLogTerm := n.getLogTerm(prevLogIndex)
 
 	var entries []LogEntry
 	if n.nextIndex[peerID] <= n.lastLogIndex() {
 		// Follower is behind — include entries in this heartbeat round.
-		raw := n.log[n.nextIndex[peerID]:]
+		raw := n.log[n.nextIndex[peerID]-offset:]
 		entries = make([]LogEntry, len(raw))
 		copy(entries, raw)
 	}
@@ -295,6 +319,7 @@ func (n *Node) sendHeartbeatToOne(peerID int, term int) {
 			peerID, reply.Term, n.currentTerm)
 		n.checkTerm(reply.Term)
 		n.mu.Unlock()
+		n.persist()
 		n.resetElectionTimer()
 		n.logf("⬇  stepped down to Follower — election timer reset")
 		return

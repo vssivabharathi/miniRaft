@@ -136,6 +136,8 @@ func (n *Node) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) error
 		return fmt.Errorf("node %d is dead", n.id)
 	}
 
+	n.metrics.RPCReceived.Add(1)
+
 	n.mu.Lock()
 
 	// -------------------------------------------------------------------
@@ -202,6 +204,10 @@ func (n *Node) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) error
 	}
 
 	n.mu.Unlock()
+
+	if steppedDown || grantVote {
+		n.persist()
+	}
 
 	// -------------------------------------------------------------------
 	// Timer reset — AFTER releasing the lock.
@@ -305,6 +311,8 @@ func (n *Node) startElection() {
 
 	n.mu.Unlock()
 
+	n.persist()
+
 	n.logf("⚡ ELECTION START (term=%d, lastLogIndex=%d, lastLogTerm=%d)",
 		termAtStart, lastLogIdx, lastLogTerm)
 
@@ -358,7 +366,13 @@ func (n *Node) startElection() {
 			// PHASE 3: Process the reply (under lock)
 			// =================================================================
 			n.mu.Lock()
-			defer n.mu.Unlock()
+			steppedDown := false
+			defer func() {
+				n.mu.Unlock()
+				if steppedDown {
+					n.persist()
+				}
+			}()
 
 			// -----------------------------------------------------------------
 			// Stale-reply Guard A: State check.
@@ -395,6 +409,7 @@ func (n *Node) startElection() {
 				n.logfLocked("stepping down — Node %d replied with higher term %d (our term=%d)",
 					pid, reply.Term, n.currentTerm)
 				n.checkTerm(reply.Term)
+				steppedDown = true
 				return
 			}
 
@@ -460,6 +475,8 @@ func (n *Node) startElection() {
 //   - Makes it easy to inject a mock transport in tests (replace this function).
 //   - Centralizes connection-error handling in one place.
 func (n *Node) sendRequestVote(peerID int, args *RequestVoteArgs, reply *RequestVoteReply) bool {
+	n.metrics.RPCSent.Add(1)
+
 	client := n.getClient(peerID)
 	if client == nil {
 		// Peer is unreachable — connection could not be established.

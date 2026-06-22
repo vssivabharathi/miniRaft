@@ -45,7 +45,10 @@
 
 package main
 
-import "fmt"
+import (
+	"fmt"
+	"os"
+)
 
 // ---------------------------------------------------------------------------
 // RPC types (used by both heartbeat.go and rpc.go)
@@ -145,6 +148,11 @@ func (n *Node) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply)
 		return fmt.Errorf("node %d is dead", n.id)
 	}
 
+	n.metrics.RPCReceived.Add(1)
+	if len(args.Entries) == 0 {
+		n.metrics.HeartbeatsReceived.Add(1)
+	}
+
 	n.mu.Lock()
 
 	// -----------------------------------------------------------------------
@@ -172,7 +180,8 @@ func (n *Node) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply)
 	// election. We revert to Follower WITHOUT clearing votedFor (we voted for
 	// ourselves; clearing it would allow double-voting in the same term).
 	// -----------------------------------------------------------------------
-	n.checkTerm(args.Term)
+	// -----------------------------------------------------------------------
+	stateChanged := n.checkTerm(args.Term)
 
 	if n.state == Candidate {
 		// Same term: another candidate won. Stop campaigning.
@@ -213,30 +222,33 @@ func (n *Node) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply)
 			"(prevLogIndex=%d, ourLastIndex=%d) — sending conflictIndex=%d",
 			args.PrevLogIndex, n.lastLogIndex(), reply.ConflictIndex)
 		n.mu.Unlock()
+		if stateChanged {
+			n.persist()
+		}
 		// We DO reset the timer: the leader is valid (term check passed),
 		// the rejection is about log state, not authority.
 		n.resetElectionTimer()
 		return nil
 	}
 
+	offset := n.log[0].Index
+
 	// Case B: Entry at PrevLogIndex has the wrong term.
-	// Note: PrevLogIndex==0 is the sentinel entry (always term=0), which
-	// always matches PrevLogTerm=0. We skip this check for index 0.
-	if args.PrevLogIndex > 0 && n.log[args.PrevLogIndex].Term != args.PrevLogTerm {
-		conflictTerm := n.log[args.PrevLogIndex].Term
+	if args.PrevLogIndex < offset {
+		reply.Success = false
+		reply.ConflictIndex = offset + 1
+		reply.ConflictTerm = 0
+		n.mu.Unlock()
+		return nil
+	}
+
+	if args.PrevLogIndex > offset && n.log[args.PrevLogIndex-offset].Term != args.PrevLogTerm {
+		conflictTerm := n.log[args.PrevLogIndex-offset].Term
 		reply.Success = false
 		reply.ConflictTerm = conflictTerm
 
-		// Find the FIRST index with conflictTerm. This allows the leader to
-		// skip the entire conflicting term in one nextIndex decrement, rather
-		// than decrementing one position at a time.
-		//
-		// Example: our log has 20 entries all with term=2.
-		// Leader sends prevLogTerm=3 (doesn't match).
-		// Without optimization: leader decrements nextIndex 20 times.
-		// With optimization: ConflictIndex=1 → leader skips all 20 at once.
 		conflictIndex := args.PrevLogIndex
-		for conflictIndex > 1 && n.log[conflictIndex-1].Term == conflictTerm {
+		for conflictIndex > offset+1 && n.log[conflictIndex-1-offset].Term == conflictTerm {
 			conflictIndex--
 		}
 		reply.ConflictIndex = conflictIndex
@@ -246,8 +258,19 @@ func (n *Node) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply)
 			args.PrevLogIndex, args.PrevLogTerm, conflictTerm,
 			reply.ConflictTerm, reply.ConflictIndex)
 		n.mu.Unlock()
+		if stateChanged {
+			n.persist()
+		}
 		n.resetElectionTimer()
 		return nil
+	} else if args.PrevLogIndex == offset && args.PrevLogIndex != 0 {
+		if n.log[0].Term != args.PrevLogTerm {
+			reply.Success = false
+			reply.ConflictIndex = offset
+			reply.ConflictTerm = 0
+			n.mu.Unlock()
+			return nil
+		}
 	}
 
 	// -----------------------------------------------------------------------
@@ -275,24 +298,20 @@ func (n *Node) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply)
 	for i, entry := range args.Entries {
 		logIdx := args.PrevLogIndex + 1 + i
 
-		if logIdx < len(n.log) {
-			if n.log[logIdx].Term == entry.Term {
-				// Same (index, term) → same entry (Log Matching Property).
-				// Skip — do not overwrite, do not truncate. This makes the
-				// handler idempotent: replaying the same AppendEntries is safe.
+		if logIdx < len(n.log)+offset {
+			if n.log[logIdx-offset].Term == entry.Term {
 				continue
 			}
-			// Different term → genuine conflict. Truncate from logIdx
-			// and append the rest of the leader's entries at once.
 			n.logfLocked("TRUNCATE log[%d:] — conflict: our term=%d, leader term=%d",
-				logIdx, n.log[logIdx].Term, entry.Term)
-			n.log = n.log[:logIdx]
+				logIdx, n.log[logIdx-offset].Term, entry.Term)
+			n.log = n.log[:logIdx-offset]
 			n.log = append(n.log, args.Entries[i:]...)
+			stateChanged = true
 			break
 		}
 
-		// logIdx is past our log's current end — append remaining entries.
 		n.log = append(n.log, args.Entries[i:]...)
+		stateChanged = true
 		break
 	}
 
@@ -324,6 +343,9 @@ func (n *Node) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply)
 		if newCommit > n.commitIndex {
 			n.logfLocked("commitIndex: %d → %d (leaderCommit=%d)",
 				n.commitIndex, newCommit, args.LeaderCommit)
+			
+			n.metrics.CommandsCommitted.Add(int64(newCommit - n.commitIndex))
+			
 			n.commitIndex = newCommit
 		}
 	}
@@ -332,6 +354,10 @@ func (n *Node) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply)
 	shouldApply := n.lastApplied < n.commitIndex
 
 	n.mu.Unlock()
+
+	if stateChanged {
+		n.persist()
+	}
 
 	// Reset election timer — we've confirmed a valid leader exists.
 	// Done AFTER releasing the lock (timer has its own internal lock).
@@ -357,6 +383,11 @@ func (n *Node) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply)
 // This function is the shared transport layer for both heartbeat.go (Phase 4)
 // and the log replication paths in this file (Phase 5).
 func (n *Node) sendAppendEntries(peerID int, args *AppendEntriesArgs, reply *AppendEntriesReply) bool {
+	n.metrics.RPCSent.Add(1)
+	if len(args.Entries) == 0 {
+		n.metrics.HeartbeatsSent.Add(1)
+	}
+
 	client := n.getClient(peerID)
 	if client == nil {
 		return false
@@ -428,6 +459,8 @@ func (n *Node) SubmitCommand(command string) (index int, term int, isLeader bool
 	// Capture term for the replication goroutines' stale-reply guard.
 	replicationTerm := n.currentTerm
 	n.mu.Unlock()
+
+	n.persist()
 
 	// Trigger immediate replication — don't wait for the next heartbeat tick.
 	// This is what makes the commit latency ~1 network RTT rather than ~50ms.
@@ -517,19 +550,39 @@ func (n *Node) replicateToFollower(peerID int, term int) {
 
 		// Read replication state for this peer.
 		nextIdx := n.nextIndex[peerID]
+		offset := n.log[0].Index
+
+		if nextIdx <= offset {
+			// Peer is too far behind; we must send a snapshot instead of AppendEntries.
+			args := &InstallSnapshotArgs{
+				Term:              n.currentTerm,
+				LeaderID:          n.id,
+				LastIncludedIndex: offset,
+				LastIncludedTerm:  n.log[0].Term,
+			}
+			
+			// We need to read the snapshot file from disk without holding the lock.
+			n.mu.Unlock()
+			
+			snapData, err := os.ReadFile(fmt.Sprintf("data/node-%d.snapshot", n.id))
+			if err != nil {
+				n.logf("failed to read snapshot file for peer %d: %v", peerID, err)
+				return
+			}
+			args.Data = snapData
+			
+			// We execute InstallSnapshot instead
+			go n.sendInstallSnapshot(peerID, args)
+			return
+		}
+
 		prevLogIndex := nextIdx - 1
 		prevLogTerm := n.getLogTerm(prevLogIndex)
 
 		// Collect all entries from nextIdx to the end of the leader's log.
-		// We copy to avoid holding a reference to n.log while the lock is released.
-		//
-		// IMPORTANT: We copy the slice — not hold a reference. If we held a
-		// reference to n.log[nextIdx:] and another goroutine appended to n.log,
-		// the slice's underlying array could be reallocated, causing our reference
-		// to point to stale or uninitialized memory.
 		var entries []LogEntry
 		if nextIdx <= n.lastLogIndex() {
-			raw := n.log[nextIdx:]
+			raw := n.log[nextIdx-offset:]
 			entries = make([]LogEntry, len(raw))
 			copy(entries, raw)
 		}
@@ -592,6 +645,7 @@ func (n *Node) replicateToFollower(peerID int, term int) {
 				peerID, reply.Term, n.currentTerm)
 			n.checkTerm(reply.Term)
 			n.mu.Unlock()
+			n.persist()
 			n.resetElectionTimer()
 			return
 		}
@@ -622,8 +676,9 @@ func (n *Node) replicateToFollower(peerID int, term int) {
 			} else if reply.ConflictTerm != 0 {
 				// Find the last index in OUR log with ConflictTerm.
 				lastWithConflictTerm := -1
-				for i := n.lastLogIndex(); i >= 1; i-- {
-					if n.log[i].Term == reply.ConflictTerm {
+				offset := n.log[0].Index
+				for i := n.lastLogIndex(); i > offset; i-- {
+					if n.log[i-offset].Term == reply.ConflictTerm {
 						lastWithConflictTerm = i
 						break
 					}
@@ -767,15 +822,57 @@ func (n *Node) advanceCommitIndex() {
 			}
 		}
 
+		offset := n.log[0].Index
 		if replicationCount >= n.quorumSize() {
 			// Rules 1, 2, 3 all satisfied — commit!
 			n.logfLocked("🎯 COMMIT log[%d] cmd=%q term=%d — replicated on %d/%d nodes",
-				N, n.log[N].Command, n.currentTerm,
+				N, n.log[N-offset].Command, n.currentTerm,
 				replicationCount, len(n.peers)+1)
+			
+			n.metrics.CommandsCommitted.Add(int64(N - n.commitIndex))
+			
 			n.commitIndex = N
 			// Stop: we found the highest committable entry.
 			// Lower entries are transitively committed via Log Matching.
 			break
 		}
+	}
+}
+
+// sendInstallSnapshot sends an InstallSnapshot RPC to a peer.
+func (n *Node) sendInstallSnapshot(peerID int, args *InstallSnapshotArgs) {
+	n.mu.RLock()
+	client := n.rpcClients[peerID]
+	n.mu.RUnlock()
+	
+	if client == nil {
+		return
+	}
+
+	var reply InstallSnapshotReply
+	err := client.Call("Node.InstallSnapshot", args, &reply)
+	if err != nil {
+		return
+	}
+
+	n.mu.Lock()
+	defer n.mu.Unlock()
+
+	if n.state != Leader || n.currentTerm != args.Term {
+		return
+	}
+
+	if reply.Term > n.currentTerm {
+		n.checkTerm(reply.Term)
+		n.state = Follower
+		n.persist()
+		n.resetElectionTimer()
+		return
+	}
+
+	// Update matchIndex and nextIndex
+	if args.LastIncludedIndex > n.matchIndex[peerID] {
+		n.matchIndex[peerID] = args.LastIncludedIndex
+		n.nextIndex[peerID] = args.LastIncludedIndex + 1
 	}
 }
