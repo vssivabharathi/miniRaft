@@ -295,6 +295,12 @@ type Node struct {
 	// in the rare case where a goroutine checks dead while another holds mu
 	// during a controlled shutdown sequence.
 	dead int32
+
+	// stateMachine is the underlying state machine that applies committed log entries.
+	stateMachine *KVStore
+
+	// metrics tracks operational visibility statistics (lock-free)
+	metrics *Metrics
 }
 
 // ---------------------------------------------------------------------------
@@ -344,7 +350,12 @@ func NewNode(id int, peers map[int]string) *Node {
 
 		// dead = 0 (alive)
 		dead: 0,
+
+		stateMachine: NewKVStore(),
+		metrics:      &Metrics{},
 	}
+
+	n.restore()
 
 	n.logf("initialized as %s (term=%d)", n.state, n.currentTerm)
 	return n
@@ -381,7 +392,6 @@ func (n *Node) Revive() {
 	atomic.StoreInt32(&n.dead, 0)
 
 	n.mu.Lock()
-	defer n.mu.Unlock()
 
 	n.state = Follower
 	// Clear stale RPC clients — they point to closed connections.
@@ -411,6 +421,10 @@ func (n *Node) Revive() {
 	}
 
 	n.logfLocked("REVIVED — rejoining cluster as FOLLOWER (term=%d)", n.currentTerm)
+	n.mu.Unlock()
+
+	n.restoreSnapshot()
+	n.restore()
 }
 
 // ---------------------------------------------------------------------------
@@ -438,6 +452,10 @@ func (n *Node) Revive() {
 // holding the lock during timer operations.
 func (n *Node) becomeFollower(term int) {
 	prev := n.state
+	if prev == Candidate {
+		n.metrics.ElectionsLost.Add(1)
+	}
+
 	n.state = Follower
 	n.currentTerm = term
 	n.votedFor = -1 // New term — clear the vote
@@ -455,6 +473,12 @@ func (n *Node) becomeFollower(term int) {
 //
 // Callers MUST hold n.mu (write lock) before calling this method.
 func (n *Node) becomeCandidate() {
+	if n.state == Candidate {
+		// We timed out while already a Candidate. This means the previous
+		// election was a split vote or no quorum was reached — we lost it.
+		n.metrics.ElectionsLost.Add(1)
+	}
+
 	n.currentTerm++   // Begin a new term
 	n.votedFor = n.id // Vote for self — always the first vote
 	n.state = Candidate
@@ -486,6 +510,8 @@ func (n *Node) becomeLeader() {
 		n.matchIndex[peerID] = 0
 	}
 
+	n.metrics.ElectionsWon.Add(1)
+
 	n.logfLocked("CANDIDATE -> LEADER (term=%d, lastLogIndex=%d)", n.currentTerm, lastIdx)
 }
 
@@ -494,11 +520,15 @@ func (n *Node) becomeLeader() {
 // ---------------------------------------------------------------------------
 
 // lastLogIndex returns the index of the last entry in the log.
-// Returns 0 if only the sentinel entry exists.
+// Returns 0 if only the sentinel entry exists and it's index 0.
+// If a snapshot exists, the sentinel entry might have a non-zero index.
 //
 // Callers should hold at least n.mu.RLock() before calling.
 func (n *Node) lastLogIndex() int {
-	return len(n.log) - 1
+	if len(n.log) == 0 {
+		return 0
+	}
+	return n.log[len(n.log)-1].Index
 }
 
 // LastLogIndex safely returns the index of the last entry in the log.
@@ -510,10 +540,13 @@ func (n *Node) LastLogIndex() int {
 }
 
 // lastLogTerm returns the term of the last entry in the log.
-// Returns 0 if only the sentinel entry exists.
+// Returns 0 if only the sentinel entry exists and its term is 0.
 //
 // Callers should hold at least n.mu.RLock() before calling.
 func (n *Node) lastLogTerm() int {
+	if len(n.log) == 0 {
+		return 0
+	}
 	return n.log[len(n.log)-1].Term
 }
 
@@ -522,10 +555,14 @@ func (n *Node) lastLogTerm() int {
 //
 // Callers should hold at least n.mu.RLock() before calling.
 func (n *Node) getLogTerm(index int) int {
-	if index < 0 || index >= len(n.log) {
+	if len(n.log) == 0 {
 		return 0
 	}
-	return n.log[index].Term
+	offset := n.log[0].Index
+	if index < offset || index >= offset+len(n.log) {
+		return 0
+	}
+	return n.log[index-offset].Term
 }
 
 // isLogUpToDate returns true if the candidate's log is at least as up-to-date
@@ -564,19 +601,33 @@ func (n *Node) isLogUpToDate(candidateLastLogIndex, candidateLastLogTerm int) bo
 // because we read from a local copy of the entries slice.
 func (n *Node) applyCommitted() {
 	n.mu.Lock()
+	
 	// Collect entries to apply without holding the lock for I/O.
 	var toApply []LogEntry
-	for n.lastApplied < n.commitIndex {
-		n.lastApplied++
-		entry := n.log[n.lastApplied]
-		toApply = append(toApply, entry)
+	offset := n.log[0].Index
+	for i := n.lastApplied + 1; i <= n.commitIndex; i++ {
+		toApply = append(toApply, n.log[i-offset])
+	}
+	
+	// Prevent other goroutines from applying the same entries
+	if len(toApply) > 0 {
+		n.lastApplied = n.commitIndex
 	}
 	n.mu.Unlock()
 
 	// Apply each entry outside the lock.
 	for _, entry := range toApply {
-		n.logf("APPLY  log[%d] term=%d cmd=%q", entry.Index, entry.Term, entry.Command)
+		n.metrics.CommandsApplied.Add(1)
+		if err := n.stateMachine.Apply(entry.Command); err == nil {
+			n.logf("APPLY  log[%d] term=%d cmd=%q", entry.Index, entry.Term, entry.Command)
+		} else {
+			n.logf("APPLY ERROR log[%d]: %v", entry.Index, err)
+		}
 	}
+
+	n.mu.Lock()
+	n.checkSnapshotThreshold()
+	n.mu.Unlock()
 }
 
 // ---------------------------------------------------------------------------
@@ -792,4 +843,10 @@ func (n *Node) GetLog() []LogEntry {
 	copy(result, n.log)
 
 	return result
+}
+
+// GetStateMachine returns the node's KVStore state machine.
+// Exported for tests.
+func (n *Node) GetStateMachine() *KVStore {
+	return n.stateMachine
 }
