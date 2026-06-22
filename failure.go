@@ -42,6 +42,7 @@ import (
 	"log"
 	"net"
 	"net/rpc"
+	"os"
 	"sync"
 	"time"
 )
@@ -94,6 +95,9 @@ type Cluster struct {
 // Common bug: Starting tickers before servers → spurious connection failures
 // in the first election round.
 func NewCluster(size int) (*Cluster, error) {
+	// Clean up data from previous clusters to prevent cross-test contamination.
+	os.RemoveAll("data")
+
 	// Use OS-assigned ports (":0") to avoid collisions between concurrent
 	// or sequential test runs. Each node's listener is created first so we
 	// know the port, then the peer maps are built with those concrete addresses.
@@ -356,6 +360,58 @@ func (c *Cluster) Restart(nodeID int) error {
 
 	return nil
 }
+
+// ColdRestart simulates a cold start of a node by killing it, closing listeners,
+// wiping the in-memory Node struct, and calling NewNode to instantiate a fresh one
+// that will read state/snapshots from disk.
+func (c *Cluster) ColdRestart(nodeID int) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	node, ok := c.nodes[nodeID]
+	if !ok {
+		return fmt.Errorf("cluster: unknown node ID %d", nodeID)
+	}
+
+	log.Printf("[Cluster] 🔄 COLD RESTARTING Node %d", nodeID)
+
+	// Ensure old server is stopped.
+	if !node.isDead() {
+		node.Kill()
+	}
+	if ln := c.listeners[nodeID]; ln != nil {
+		ln.Close()
+		c.listeners[nodeID] = nil
+	}
+
+	// Brief pause to allow OS to release the port
+	time.Sleep(20 * time.Millisecond)
+
+	// Create a new Node struct, wiping out all in-memory state.
+	peers := make(map[int]string)
+	for id, addr := range c.addrs {
+		if id != nodeID {
+			peers[id] = addr
+		}
+	}
+	newNode := NewNode(nodeID, peers)
+	c.nodes[nodeID] = newNode
+
+	// Start a fresh RPC server.
+	if err := c.startRPCServer(nodeID); err != nil {
+		return fmt.Errorf("cluster: cold restart failed for Node %d: %w", nodeID, err)
+	}
+
+	// Start election ticker.
+	newNode.StartElectionTicker()
+
+	log.Printf("[Cluster] ✅ Node %d cold-restarted as FOLLOWER (term=%d, logLen=%d)",
+		nodeID, func() int { t, _ := newNode.GetState(); return t }(),
+		len(newNode.GetLog()))
+
+	return nil
+}
+
 
 // IsAlive returns true if the node is currently running (not killed).
 func (c *Cluster) IsAlive(nodeID int) bool {

@@ -25,6 +25,9 @@ type PersistentState struct {
 //
 // If writing to disk fails, the error is logged but not fatal.
 func (n *Node) persist() error {
+	if n.isDead() {
+		return nil
+	}
 	// 1. Acquire read lock and copy the state
 	n.mu.RLock()
 	state := PersistentState{
@@ -98,6 +101,15 @@ func (n *Node) restore() error {
 	n.currentTerm = state.CurrentTerm
 	n.votedFor = state.VotedFor
 	n.log = state.Log
+	if len(n.log) > 0 {
+		offset := n.log[0].Index
+		if offset > n.lastApplied {
+			n.lastApplied = offset
+		}
+		if offset > n.commitIndex {
+			n.commitIndex = offset
+		}
+	}
 	n.mu.Unlock()
 
 	n.logf("restored state from disk: term=%d, votedFor=%d, logLength=%d",
