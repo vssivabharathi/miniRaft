@@ -1,0 +1,88 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>MiniRaft Cluster Dashboard</title>
+    <link rel="stylesheet" href="style.css">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+</head>
+<body>
+    <div class="background-effects">
+        <div class="blob blob-1"></div>
+        <div class="blob blob-2"></div>
+    </div>
+
+    <header class="glass-panel">
+        <div class="header-content">
+            <h1>MiniRaft Cluster Dashboard</h1>
+            <div class="cluster-status">
+                <div class="status-item">
+                    <span class="label">Term:</span>
+                    <span id="global-term" class="value">-</span>
+                </div>
+                <div class="status-item">
+                    <span class="label">Leader:</span>
+                    <span id="global-leader" class="value">-</span>
+                </div>
+            </div>
+        </div>
+        <div class="command-section">
+            <input type="text" id="command-input" placeholder="Enter command (e.g. SET x 100)">
+            <button id="submit-btn" class="btn primary-btn">Submit Command</button>
+        </div>
+    </header>
+
+    <main id="nodes-container" class="nodes-grid">
+        <!-- Node cards injected by JS -->
+    </main>
+
+    <!-- Template for Node Card -->
+    <template id="node-card-template">
+        <div class="node-card glass-panel" data-id="">
+            <div class="card-header">
+                <h2>Node <span class="node-id"></span></h2>
+                <span class="state-badge"></span>
+            </div>
+            
+            <div class="metrics-grid">
+                <div class="metric">
+                    <span class="label">Term</span>
+                    <span class="value m-term">-</span>
+                </div>
+                <div class="metric">
+                    <span class="label">Commit Index</span>
+                    <span class="value m-commit">-</span>
+                </div>
+                <div class="metric">
+                    <span class="label">Log Length</span>
+                    <span class="value m-log">-</span>
+                </div>
+                <div class="metric">
+                    <span class="label">Elections Won</span>
+                    <span class="value m-elections">-</span>
+                </div>
+                <div class="metric">
+                    <span class="label">Commands (Comm/App)</span>
+                    <span class="value m-commands">- / -</span>
+                </div>
+                <div class="metric">
+                    <span class="label">RPC (Sent/Recv)</span>
+                    <span class="value m-rpc">- / -</span>
+                </div>
+                <div class="metric">
+                    <span class="label">Heartbeats (Sent/Recv)</span>
+                    <span class="value m-heartbeats">- / -</span>
+                </div>
+            </div>
+
+            <div class="card-actions">
+                <button class="btn kill-btn">Kill</button>
+                <button class="btn restart-btn">Restart</button>
+            </div>
+        </div>
+    </template>
+
+    <script src="app.js"></script>
+</body>
+</html>
