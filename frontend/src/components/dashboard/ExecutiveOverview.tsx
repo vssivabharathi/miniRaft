@@ -1,5 +1,5 @@
+import { Server, Activity, ArrowUpRight, Database, ShieldCheck } from 'lucide-react';
 import type { ClusterSummary, MetricsSnapshot } from '../../types';
-import { Activity, Server, Database, Hash } from 'lucide-react';
 
 interface Props {
   cluster: ClusterSummary;
@@ -7,73 +7,64 @@ interface Props {
 }
 
 export default function ExecutiveOverview({ cluster, metrics }: Props) {
+  const leaderNode = cluster.nodes.find(n => n.state === 'LEADER');
   const aliveNodes = cluster.nodes.filter(n => n.state !== 'DEAD').length;
-  const totalNodes = cluster.nodes.length;
-  
-  // To avoid double-counting commands (since every node applies them), we can use the leader's metrics,
-  // or just average them. Let's use the leader's metrics if available, otherwise max.
-  const leaderMetrics = metrics.find(m => m.NodeID === cluster.leader) || 
-                        metrics.reduce((max, m) => m.CommandsCommitted > (max?.CommandsCommitted || 0) ? m : max, metrics[0]);
+  const healthStatus = aliveNodes > cluster.nodes.length / 2 ? 'HEALTHY' : 'DEGRADED';
+  const totalRpcs = metrics.reduce((acc, curr) => acc + curr.RPCSent, 0);
 
-  const leaderNode = cluster.nodes.find(n => n.id === cluster.leader);
+  const stats = [
+    {
+      title: "Current Leader",
+      value: leaderNode ? `Node ${leaderNode.id}` : "Election",
+      subtext: `Term ${cluster.term}`,
+      icon: Server,
+      color: "text-primary"
+    },
+    {
+      title: "Cluster Health",
+      value: healthStatus,
+      subtext: `${aliveNodes} / ${cluster.nodes.length} nodes active`,
+      icon: ShieldCheck,
+      color: healthStatus === 'HEALTHY' ? "text-success" : "text-danger"
+    },
+    {
+      title: "RPC Throughput",
+      value: totalRpcs.toLocaleString(),
+      subtext: "Total RPCs sent",
+      icon: Activity,
+      color: "text-primary"
+    },
+    {
+      title: "State Machine",
+      value: leaderNode?.commitIndex.toLocaleString() || "0",
+      subtext: "Commands committed",
+      icon: Database,
+      color: "text-primary"
+    }
+  ];
 
   return (
     <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
-      <div className="bg-slate-800 rounded-xl border border-slate-700 p-5 shadow-lg flex items-start gap-4 transition-transform hover:-translate-y-1">
-        <div className="bg-blue-500/20 p-3 rounded-lg text-blue-400">
-          <Activity className="w-6 h-6" />
-        </div>
-        <div>
-          <p className="text-sm text-slate-400 font-medium">Cluster Status</p>
-          <div className="flex items-center gap-2 mt-1">
-            <span className="text-2xl font-bold text-slate-100">
-              {cluster.leader > 0 ? `Leader Node ${cluster.leader}` : 'No Leader'}
-            </span>
+      {stats.map((stat, i) => {
+        const Icon = stat.icon;
+        return (
+          <div key={i} className="bg-panel border border-border-subtle rounded-md p-4 flex flex-col justify-between">
+            <div className="flex items-start justify-between">
+              <div>
+                <p className="text-xs font-semibold text-text-muted uppercase tracking-wider mb-1">{stat.title}</p>
+                <h3 className="text-2xl font-bold text-text-primary">{stat.value}</h3>
+              </div>
+              <div className={`p-2 bg-background rounded-md border border-border-subtle ${stat.color}`}>
+                <Icon className="w-5 h-5" />
+              </div>
+            </div>
+            <div className="mt-4 flex items-center gap-1.5 text-xs text-text-muted">
+              {stat.title === "RPC Throughput" && <ArrowUpRight className="w-3 h-3 text-success" />}
+              <span>{stat.subtext}</span>
+            </div>
           </div>
-          <p className="text-xs text-slate-500 mt-1">Term {cluster.term}</p>
-        </div>
-      </div>
-
-      <div className="bg-slate-800 rounded-xl border border-slate-700 p-5 shadow-lg flex items-start gap-4 transition-transform hover:-translate-y-1">
-        <div className={`p-3 rounded-lg ${aliveNodes > totalNodes / 2 ? 'bg-emerald-500/20 text-emerald-400' : 'bg-red-500/20 text-red-400'}`}>
-          <Server className="w-6 h-6" />
-        </div>
-        <div>
-          <p className="text-sm text-slate-400 font-medium">Health</p>
-          <div className="flex items-center gap-2 mt-1">
-            <span className="text-2xl font-bold text-slate-100">{aliveNodes} / {totalNodes}</span>
-          </div>
-          <p className="text-xs text-slate-500 mt-1">Nodes Alive</p>
-        </div>
-      </div>
-
-      <div className="bg-slate-800 rounded-xl border border-slate-700 p-5 shadow-lg flex items-start gap-4 transition-transform hover:-translate-y-1">
-        <div className="bg-purple-500/20 p-3 rounded-lg text-purple-400">
-          <Database className="w-6 h-6" />
-        </div>
-        <div>
-          <p className="text-sm text-slate-400 font-medium">Throughput</p>
-          <div className="flex items-center gap-2 mt-1">
-            <span className="text-2xl font-bold text-slate-100">{leaderMetrics?.CommandsCommitted || 0}</span>
-          </div>
-          <p className="text-xs text-slate-500 mt-1">Total Commands</p>
-        </div>
-      </div>
-
-      <div className="bg-slate-800 rounded-xl border border-slate-700 p-5 shadow-lg flex items-start gap-4 transition-transform hover:-translate-y-1">
-        <div className="bg-amber-500/20 p-3 rounded-lg text-amber-400">
-          <Hash className="w-6 h-6" />
-        </div>
-        <div>
-          <p className="text-sm text-slate-400 font-medium">State Machine</p>
-          <div className="flex items-center gap-2 mt-1">
-            <span className="text-2xl font-bold text-slate-100">
-              Idx {leaderNode?.commitIndex || 0}
-            </span>
-          </div>
-          <p className="text-xs text-slate-500 mt-1">Leader Commit Index</p>
-        </div>
-      </div>
+        );
+      })}
     </div>
   );
 }

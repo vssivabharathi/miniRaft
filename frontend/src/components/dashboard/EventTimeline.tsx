@@ -1,65 +1,71 @@
+import React, { useEffect, useRef } from 'react';
 import type { ClusterEvent } from '../../types';
-import { useEffect, useRef } from 'react';
-import { Info, AlertTriangle, XCircle, CheckCircle2 } from 'lucide-react';
+import { Terminal } from 'lucide-react';
 
 interface Props {
   events: ClusterEvent[];
 }
 
-export default function EventTimeline({ events }: Props) {
-  const endRef = useRef<HTMLDivElement>(null);
+const EventTimelineComponent = ({ events }: Props) => {
+  const scrollRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
-    endRef.current?.scrollIntoView({ behavior: 'smooth' });
+    if (scrollRef.current) {
+      scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
+    }
   }, [events]);
 
   return (
-    <div className="flex flex-col h-full bg-slate-900">
-      <div className="p-4 border-b border-slate-700 bg-slate-800 shrink-0 shadow-sm z-10">
-        <h2 className="text-lg font-semibold text-slate-200 flex items-center gap-2">
-          <Info className="w-5 h-5 text-blue-400" />
-          Event Timeline
-        </h2>
+    <div className="flex flex-col h-full bg-panel rounded-md border border-border-subtle shadow-sm">
+      <div className="p-4 border-b border-border-subtle flex items-center gap-2 bg-background/50">
+        <Terminal className="w-4 h-4 text-text-muted" />
+        <h2 className="text-sm font-semibold text-text-primary uppercase tracking-wider">Cluster Event Feed</h2>
       </div>
-      <div className="p-4 overflow-y-auto flex-1 space-y-3 custom-scrollbar">
+
+      <div 
+        ref={scrollRef}
+        className="flex-1 overflow-y-auto p-4 space-y-2 custom-scrollbar bg-background/20"
+      >
         {events.length === 0 ? (
-          <div className="text-center text-slate-500 mt-10 italic">Waiting for cluster events...</div>
+          <div className="text-center text-text-muted text-sm mt-10">No events recorded yet.</div>
         ) : (
-          events.map((event, idx) => {
-            const isLast = idx === events.length - 1;
+          events.map((event) => {
+            let colorClass = 'text-text-primary border-border-subtle bg-panel';
+            let dotColor = 'bg-text-muted';
             
-            let Icon = Info;
-            let color = 'text-blue-400';
-            let bg = 'bg-blue-500/10';
-            
-            if (event.type === 'success') { Icon = CheckCircle2; color = 'text-emerald-400'; bg = 'bg-emerald-500/10'; }
-            if (event.type === 'warning') { Icon = AlertTriangle; color = 'text-amber-400'; bg = 'bg-amber-500/10'; }
-            if (event.type === 'error') { Icon = XCircle; color = 'text-red-400'; bg = 'bg-red-500/10'; }
+            if (event.type === 'error') {
+              colorClass = 'text-danger border-danger/20 bg-danger/5';
+              dotColor = 'bg-danger';
+            } else if (event.type === 'success') {
+              colorClass = 'text-success border-success/20 bg-success/5';
+              dotColor = 'bg-success';
+            } else if (event.type === 'warning') {
+              colorClass = 'text-warning border-warning/20 bg-warning/5';
+              dotColor = 'bg-warning';
+            } else if (event.type === 'info') {
+              colorClass = 'text-primary border-primary/20 bg-primary/5';
+              dotColor = 'bg-primary';
+            }
 
             return (
               <div 
-                key={event.id} 
-                className={`flex gap-3 text-sm transition-all duration-500 rounded-lg p-2 ${bg} ${
-                  isLast ? 'opacity-100 shadow-md border border-slate-700/50 scale-100' : 'opacity-70 border border-transparent'
-                }`}
+                key={event.id}
+                className={`text-xs p-2 rounded border flex items-start gap-3 transition-colors ${colorClass}`}
               >
-                <div className={`mt-0.5 shrink-0 ${color}`}>
-                  <Icon className="w-4 h-4" />
+                <div className="flex flex-col items-center gap-1 mt-1">
+                  <div className={`w-2 h-2 rounded-full ${dotColor}`} />
                 </div>
-                <div className="flex flex-col w-full">
-                  <div className="flex justify-between items-start gap-2">
-                    <span className={`text-slate-200 ${isLast ? 'font-medium' : ''}`}>{event.message}</span>
-                    <span className="text-xs text-slate-500 font-mono shrink-0">
-                      {event.timestamp.toLocaleTimeString([], { hour12: false, hour: '2-digit', minute: '2-digit', second: '2-digit' })}
-                    </span>
-                  </div>
+                <div className="flex-1 font-mono">
+                  <span className="opacity-60 mr-2">[{event.timestamp.toLocaleTimeString()}]</span>
+                  <span className="font-medium">{event.message}</span>
                 </div>
               </div>
             );
           })
         )}
-        <div ref={endRef} className="h-1" />
       </div>
     </div>
   );
-}
+};
+
+export default React.memo(EventTimelineComponent);

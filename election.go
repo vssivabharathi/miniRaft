@@ -367,9 +367,10 @@ func (n *Node) startElection() {
 			// =================================================================
 			n.mu.Lock()
 			steppedDown := false
+			becameLeader := false
 			defer func() {
 				n.mu.Unlock()
-				if steppedDown {
+				if steppedDown || becameLeader {
 					n.persist()
 				}
 			}()
@@ -439,6 +440,7 @@ func (n *Node) startElection() {
 					// The leader immediately begins sending heartbeats to
 					// establish authority and suppress follower election timers.
 					n.becomeLeader()
+					becameLeader = true
 
 					// Start heartbeat loop in a separate goroutine.
 					// This goroutine is defined in heartbeat.go (Phase 4).

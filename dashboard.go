@@ -41,6 +41,12 @@ func StartDashboard(c *Cluster, addr string) *http.Server {
 	mux.HandleFunc("POST /node/{id}/restart", d.handleRestartNode)
 	mux.HandleFunc("POST /command", d.handleSubmitCommand)
 
+	// Observability Endpoints
+	mux.HandleFunc("GET /api/logs", d.handleGetLogs)
+	mux.HandleFunc("GET /api/snapshots", d.handleGetSnapshots)
+	mux.HandleFunc("GET /api/state-machine", d.handleGetStateMachine)
+	mux.HandleFunc("GET /api/node/{id}", d.handleGetNodeInfo)
+
 	srv := &http.Server{Addr: addr, Handler: mux}
 	go func() {
 		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
@@ -152,4 +158,70 @@ func (d *Dashboard) handleSubmitCommand(w http.ResponseWriter, r *http.Request) 
 		"index": index,
 		"term":  term,
 	})
+}
+
+// ---------------------------------------------------------
+// Observability API Handlers
+// ---------------------------------------------------------
+
+func (d *Dashboard) handleGetLogs(w http.ResponseWriter, r *http.Request) {
+	nodes := make([]NodeLogSummary, 0)
+	for id := 1; id <= d.cluster.NodeCount(); id++ {
+		if d.cluster.IsAlive(id) {
+			if node := d.cluster.GetNode(id); node != nil {
+				nodes = append(nodes, node.GetLogSummary())
+			}
+		}
+	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]interface{}{"nodes": nodes})
+}
+
+func (d *Dashboard) handleGetSnapshots(w http.ResponseWriter, r *http.Request) {
+	nodes := make([]NodeSnapshotSummary, 0)
+	for id := 1; id <= d.cluster.NodeCount(); id++ {
+		if d.cluster.IsAlive(id) {
+			if node := d.cluster.GetNode(id); node != nil {
+				nodes = append(nodes, node.GetSnapshotSummary())
+			}
+		}
+	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]interface{}{"nodes": nodes})
+}
+
+func (d *Dashboard) handleGetStateMachine(w http.ResponseWriter, r *http.Request) {
+	nodes := make([]NodeStateMachineSummary, 0)
+	for id := 1; id <= d.cluster.NodeCount(); id++ {
+		if d.cluster.IsAlive(id) {
+			if node := d.cluster.GetNode(id); node != nil {
+				nodes = append(nodes, node.GetStateMachineSummary())
+			}
+		}
+	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]interface{}{"nodes": nodes})
+}
+
+func (d *Dashboard) handleGetNodeInfo(w http.ResponseWriter, r *http.Request) {
+	idStr := r.PathValue("id")
+	id, err := strconv.Atoi(idStr)
+	if err != nil {
+		http.Error(w, "invalid node id", http.StatusBadRequest)
+		return
+	}
+
+	if !d.cluster.IsAlive(id) {
+		http.Error(w, "node is dead", http.StatusServiceUnavailable)
+		return
+	}
+
+	node := d.cluster.GetNode(id)
+	if node == nil {
+		http.Error(w, "node not found", http.StatusNotFound)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(node.GetFullSummary())
 }

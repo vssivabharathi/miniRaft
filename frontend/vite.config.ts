@@ -14,6 +14,7 @@ export default defineConfig({
       '/metrics': 'http://localhost:8080',
       '/node/': 'http://localhost:8080',
       '/command': 'http://localhost:8080',
+      '/api': 'http://localhost:8080',
     }
   }
 })

@@ -29,13 +29,19 @@
 package main
 
 import (
+	"flag"
 	"fmt"
 	"log"
 	"os"
+	"os/signal"
+	"syscall"
 	"time"
 )
 
 func main() {
+	webMode := flag.Bool("web", false, "Run the application in web dashboard mode")
+	flag.Parse()
+
 	// Configure logging: include timestamp and no source file prefix.
 	// We add our own [Node N][Term T] prefix in every log line.
 	log.SetFlags(log.Ltime | log.Lmicroseconds)
@@ -77,6 +83,24 @@ func main() {
 	}
 	log.Printf("✓ Leader elected: Node %d at term=%d", leaderID, term)
 	cluster.PrintStateTransitions()
+
+	if *webMode {
+		log.Println()
+		log.Println("── Web Dashboard Mode ──────────────────────────────────────────")
+		server := StartDashboard(cluster, ":8080")
+		log.Println("=====================================================")
+		log.Println(" Dashboard is live at: http://localhost:8080")
+		log.Println("=====================================================")
+
+		// Block until interrupted
+		sigChan := make(chan os.Signal, 1)
+		signal.Notify(sigChan, os.Interrupt, syscall.SIGTERM)
+		<-sigChan
+
+		log.Println("Shutting down...")
+		server.Close()
+		return
+	}
 
 	// -----------------------------------------------------------------------
 	// PHASE B: Live command submission demo.

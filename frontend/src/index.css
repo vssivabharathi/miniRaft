@@ -1,17 +1,65 @@
 @import "tailwindcss";
 
 @theme {
-  --color-slate-850: #162032;
-  --color-raft-leader: #10b981;
-  --color-raft-follower: #3b82f6;
-  --color-raft-candidate: #eab308;
-  --color-raft-dead: #ef4444;
+  --color-background: var(--bg-primary);
+  --color-panel: var(--panel-bg);
+  --color-border-subtle: var(--border-color);
+  
+  --color-primary: var(--primary);
+  --color-success: var(--success);
+  --color-warning: var(--warning);
+  --color-danger: var(--danger);
+
+  --color-text-primary: var(--text-primary);
+  --color-text-muted: var(--text-secondary);
+
+  /* Legacy aliases */
+  --color-raft-leader: var(--success);
+  --color-raft-follower: var(--primary);
+  --color-raft-candidate: var(--warning);
+  --color-raft-dead: var(--danger);
+}
+
+@layer base {
+  :root {
+    /* Light Theme (Enforced as Base for Enterprise Observability) */
+    --bg-primary: #F3F4F6;
+    --panel-bg: #FFFFFF;
+    --border-color: #E5E7EB;
+    
+    --primary: #2563EB;
+    --success: #059669;
+    --warning: #D97706;
+    --danger: #DC2626;
+    
+    --text-primary: #111827;
+    --text-secondary: #4B5563;
+  }
 }
 
 body {
-  @apply bg-slate-900 text-slate-100 antialiased;
+  @apply bg-background text-text-primary antialiased;
 }
 
+/* Custom Scrollbar for Enterprise Density */
+.custom-scrollbar::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+.custom-scrollbar::-webkit-scrollbar-track {
+  background: transparent;
+}
+.custom-scrollbar::-webkit-scrollbar-thumb {
+  @apply bg-border-subtle rounded-full;
+}
+.custom-scrollbar::-webkit-scrollbar-thumb:hover {
+  @apply bg-text-muted;
+}
+
+/* React Flow Overrides */
 .react-flow__node {
-  @apply rounded-xl border-2 bg-slate-800 shadow-lg font-sans;
+  @apply rounded-md border border-border-subtle bg-panel shadow-sm font-sans;
+}
+.react-flow__attribution {
+  display: none !important;
 }
