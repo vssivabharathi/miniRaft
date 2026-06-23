@@ -1,0 +1,17 @@
+@import "tailwindcss";
+
+@theme {
+  --color-slate-850: #162032;
+  --color-raft-leader: #10b981;
+  --color-raft-follower: #3b82f6;
+  --color-raft-candidate: #eab308;
+  --color-raft-dead: #ef4444;
+}
+
+body {
+  @apply bg-slate-900 text-slate-100 antialiased;
+}
+
+.react-flow__node {
+  @apply rounded-xl border-2 bg-slate-800 shadow-lg font-sans;
+}
