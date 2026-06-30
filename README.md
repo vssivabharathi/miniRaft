@@ -541,6 +541,7 @@ npm install
 npm run dev
 # Open: http://localhost:5173
 ```
+![PREVIEW](static/image.png)
 
 The dashboard exposes:
 - **Cluster status** — leader ID, current term, per-node state
@@ -548,6 +549,7 @@ The dashboard exposes:
 - **Snapshot viewer** — compaction offset and physical log size
 - **KV state machine** — current key-value store contents per node
 - **Interactive controls** — kill / restart any node, simulate network partitions, and submit commands in real time
+![node image](static/imageNode.png)
 #### Basic view of Nodes
 
 
